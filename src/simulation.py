@@ -1,41 +1,9 @@
 import numpy as np
-import matplotlib.pyplot as plt
 
 from dataclasses import dataclass
 from scipy.integrate import solve_ivp
 from scipy.interpolate import interp1d
 from scipy.special import dawsn
-
-
-# ============================================================
-# PARAMETERS BLOCK
-# ============================================================
-
-GAMMA_A = 0.005
-GAMMA_B = 0.005
-
-OMEGA_A = 1.0
-OMEGA_B = 1.0
-
-M_A = 1.0
-M_B = 1.0
-
-SIGMA = 0.01
-D = 1.0
-
-E = 100.0
-
-T_MAX = 50.0
-DT = 0.01
-
-N_NOISE_TIMES = 120
-N_INTEGRAL_POINTS = 400
-
-RTOL = 1e-8
-ATOL = 1e-10
-
-SAVE_FIGURES = False
-OUTPUT_PREFIX = "channel_output"
 
 
 # ============================================================
@@ -106,7 +74,12 @@ def solve_green_functions(params, t_max, dt=0.01, rtol=1e-8, atol=1e-10):
 
             def hist_single_point(t_delay):
                 if t_delay < 0.0:
-                    return {"G_AA": 0.0, "G_AB": 0.0, "G_BA": 0.0, "G_BB": 0.0}
+                    return {
+                        "G_AA": 0.0,
+                        "G_AB": 0.0,
+                        "G_BA": 0.0,
+                        "G_BB": 0.0,
+                    }
 
                 return {
                     "G_AA": float(y_known[0, 0]),
@@ -132,7 +105,12 @@ def solve_green_functions(params, t_max, dt=0.01, rtol=1e-8, atol=1e-10):
 
         def hist(t_delay):
             if t_delay < 0.0:
-                return {"G_AA": 0.0, "G_AB": 0.0, "G_BA": 0.0, "G_BB": 0.0}
+                return {
+                    "G_AA": 0.0,
+                    "G_AB": 0.0,
+                    "G_BA": 0.0,
+                    "G_BB": 0.0,
+                }
 
             vals = [float(interp(t_delay)) for interp in interpolators]
 
@@ -458,7 +436,9 @@ def compute_N_and_W(T, green_interp, params, n_integral_points=400):
     )
 
     N_total = N_initial + N_prime
-    W_det = np.linalg.det(N_total)
+
+    # Explicit 2x2 determinant.
+    W_det = N_total[0, 0] * N_total[1, 1] - N_total[0, 1] * N_total[1, 0]
 
     return N_total, W_det
 
@@ -467,27 +447,35 @@ def compute_N_and_W(T, green_interp, params, n_integral_points=400):
 # CLASSICAL CAPACITY
 # ============================================================
 
-def h_bosonic(x):
+def h_bosonic(x, tolerance=1e-12):
     """
     h(x) = (x+1/2) log2(x+1/2) - (x-1/2) log2(x-1/2)
 
-    Stable implementation using n = x - 1/2.
+    Domain: x >= 1/2.
+    Tiny numerical violations are clipped to 1/2.
     """
 
     x = np.asarray(x, dtype=float)
-    n = x - 0.5
-
     out = np.full_like(x, np.nan, dtype=float)
 
-    mask_zero = np.isclose(n, 0.0, atol=1e-15, rtol=0.0)
-    mask_pos = n > 0.0
+    x_safe = x.copy()
 
-    out[mask_zero] = 0.0
+    slightly_below = (x_safe < 0.5) & (x_safe >= 0.5 - tolerance)
+    x_safe[slightly_below] = 0.5
 
-    n_pos = n[mask_pos]
-    out[mask_pos] = (
+    valid = x_safe >= 0.5
+
+    n = x_safe[valid] - 0.5
+    h_valid = np.zeros_like(n)
+
+    positive = n > 0.0
+    n_pos = n[positive]
+
+    h_valid[positive] = (
         np.log1p(n_pos) + n_pos * np.log1p(1.0 / n_pos)
     ) / np.log(2.0)
+
+    out[valid] = h_valid
 
     if out.shape == ():
         return float(out)
@@ -495,21 +483,106 @@ def h_bosonic(x):
     return out
 
 
-def compute_capacity_E(tau_values, W_values, params):
-    tau_abs = np.abs(np.asarray(tau_values, dtype=float))
+def compute_capacity_E(
+    tau_values,
+    W_values,
+    params,
+    mode="strict",
+    tolerance=1e-12,
+):
+    """
+    Energy-constrained classical capacity.
+
+    strict:
+        Uses the original formula.
+        Invalid h-domain points become NaN.
+
+    clip_nbar:
+        Rewrites through nbar and imposes nbar >= 0.
+
+    clip_h:
+        Clips all h-domain violations to 1/2.
+        Use only for visualization/debugging.
+    """
+
+    tau = np.asarray(tau_values, dtype=float)
+    tau_abs = np.abs(tau)
     W_values = np.asarray(W_values, dtype=float)
 
     C = np.full_like(tau_abs, np.nan, dtype=float)
 
-    mask_valid = W_values >= 0.0
-
+    valid_W = W_values >= 0.0
     sqrt_W = np.full_like(W_values, np.nan, dtype=float)
-    sqrt_W[mask_valid] = np.sqrt(W_values[mask_valid])
+    sqrt_W[valid_W] = np.sqrt(W_values[valid_W])
 
-    x1 = params.E / params.omega_A * tau_abs + sqrt_W
-    x2 = 0.5 * tau_abs + sqrt_W
+    if mode == "strict":
+        x1 = params.E / params.omega_A * tau_abs + sqrt_W
+        x2 = 0.5 * tau_abs + sqrt_W
 
-    C[mask_valid] = h_bosonic(x1[mask_valid]) - h_bosonic(x2[mask_valid])
+        valid_domain = (
+            valid_W
+            & np.isfinite(x1)
+            & np.isfinite(x2)
+            & (x1 >= 0.5 - tolerance)
+            & (x2 >= 0.5 - tolerance)
+        )
+
+        x1_safe = x1.copy()
+        x2_safe = x2.copy()
+
+        x1_safe[(x1_safe < 0.5) & (x1_safe >= 0.5 - tolerance)] = 0.5
+        x2_safe[(x2_safe < 0.5) & (x2_safe >= 0.5 - tolerance)] = 0.5
+
+        C[valid_domain] = (
+            h_bosonic(x1_safe[valid_domain])
+            - h_bosonic(x2_safe[valid_domain])
+        )
+
+    elif mode == "clip_nbar":
+        denominator = np.abs(1.0 - tau)
+        safe_denominator = denominator.copy()
+        safe_denominator[safe_denominator < tolerance] = np.nan
+
+        nbar = sqrt_W / safe_denominator - 0.5
+        nbar = np.maximum(0.0, nbar)
+
+        x1 = tau_abs * params.E / params.omega_A + denominator * nbar + 0.5
+        x2 = 0.5 * tau_abs + denominator * nbar + 0.5
+
+        valid_domain = (
+            valid_W
+            & np.isfinite(x1)
+            & np.isfinite(x2)
+            & (x1 >= 0.5 - tolerance)
+            & (x2 >= 0.5 - tolerance)
+        )
+
+        C[valid_domain] = (
+            h_bosonic(x1[valid_domain])
+            - h_bosonic(x2[valid_domain])
+        )
+
+    elif mode == "clip_h":
+        x1 = params.E / params.omega_A * tau_abs + sqrt_W
+        x2 = 0.5 * tau_abs + sqrt_W
+
+        x1_safe = x1.copy()
+        x2_safe = x2.copy()
+
+        x1_safe[x1_safe < 0.5] = 0.5
+        x2_safe[x2_safe < 0.5] = 0.5
+
+        valid_domain = valid_W & np.isfinite(x1_safe) & np.isfinite(x2_safe)
+
+        C[valid_domain] = (
+            h_bosonic(x1_safe[valid_domain])
+            - h_bosonic(x2_safe[valid_domain])
+        )
+
+    else:
+        raise ValueError(
+            "Unknown capacity mode. Use 'strict', 'clip_nbar', or 'clip_h'."
+        )
 
     tiny_negative = (C < 0.0) & (C > -1e-10)
     C[tiny_negative] = 0.0
@@ -517,20 +590,409 @@ def compute_capacity_E(tau_values, W_values, params):
     return C
 
 
-def save_or_show(filename=None):
-    if SAVE_FIGURES and filename is not None:
-        plt.savefig(filename, dpi=300, bbox_inches="tight")
-    plt.show()
+def compute_capacity_arguments(tau_values, W_values, params):
+    tau = np.asarray(tau_values, dtype=float)
+    tau_abs = np.abs(tau)
+    W_values = np.asarray(W_values, dtype=float)
+
+    sqrt_W = np.full_like(W_values, np.nan, dtype=float)
+    mask = W_values >= 0.0
+    sqrt_W[mask] = np.sqrt(W_values[mask])
+
+    x1 = params.E / params.omega_A * tau_abs + sqrt_W
+    x2 = 0.5 * tau_abs + sqrt_W
+
+    return x1, x2, sqrt_W
+
+
+def diagnose_capacity_inputs(t_values, tau_values, W_values, C_values, params, h_tolerance=1e-10):
+    """
+    Returns diagnostic arrays and masks for capacity computation.
+    """
+
+    tau_abs = np.abs(np.asarray(tau_values, dtype=float))
+    W_values = np.asarray(W_values, dtype=float)
+    C_values = np.asarray(C_values, dtype=float)
+
+    sqrt_W = np.full_like(W_values, np.nan, dtype=float)
+
+    mask_W_nonnegative = W_values >= 0.0
+    sqrt_W[mask_W_nonnegative] = np.sqrt(W_values[mask_W_nonnegative])
+
+    x1 = params.E / params.omega_A * tau_abs + sqrt_W
+    x2 = 0.5 * tau_abs + sqrt_W
+
+    bad = {
+        "W_negative": W_values < 0.0,
+        "W_nan": np.isnan(W_values),
+        "W_inf": np.isinf(W_values),
+        "tau_nan": np.isnan(tau_values),
+        "tau_inf": np.isinf(tau_values),
+        "x1_below_half": x1 < 0.5 - h_tolerance,
+        "x2_below_half": x2 < 0.5 - h_tolerance,
+        "x1_nan": np.isnan(x1),
+        "x2_nan": np.isnan(x2),
+        "x1_inf": np.isinf(x1),
+        "x2_inf": np.isinf(x2),
+        "C_nan": np.isnan(C_values),
+        "C_inf": np.isinf(C_values),
+    }
+
+    return {
+        "x1": x1,
+        "x2": x2,
+        "sqrt_W": sqrt_W,
+        "bad_masks": bad,
+    }
+
+
+# ============================================================
+# RELIABILITY
+# ============================================================
+
+def compute_tau_bounce_mask(
+    tau_values,
+    window=2,
+    local_window=5,
+    zero_fraction=0.05,
+):
+    """
+    Protects regions where C_E may show a physical bounce because tau crosses zero.
+    """
+
+    tau = np.asarray(tau_values, dtype=float)
+    tau_abs = np.abs(tau)
+    n = len(tau)
+
+    bounce_mask = np.zeros(n, dtype=bool)
+    finite = np.isfinite(tau)
+
+    def protect_index(k):
+        i0 = max(0, k - window)
+        i1 = min(n, k + window + 1)
+        bounce_mask[i0:i1] = True
+
+    for k in range(1, n):
+        if not (finite[k] and finite[k - 1]):
+            continue
+
+        if tau[k] == 0.0 or tau[k - 1] == 0.0 or tau[k] * tau[k - 1] < 0.0:
+            protect_index(k)
+            protect_index(k - 1)
+
+    for k in range(n):
+        if not finite[k]:
+            continue
+
+        i0 = max(0, k - local_window)
+        i1 = min(n, k + local_window + 1)
+
+        local_abs = tau_abs[i0:i1]
+        local_abs = local_abs[np.isfinite(local_abs)]
+
+        if len(local_abs) < 3:
+            continue
+
+        local_amplitude = np.nanpercentile(local_abs, 80)
+
+        if local_amplitude <= 0.0 or not np.isfinite(local_amplitude):
+            continue
+
+        if tau_abs[k] <= zero_fraction * local_amplitude:
+            protect_index(k)
+
+    return bounce_mask
+
+
+def compute_determinant_quality(N_values, epsilon=1e-300):
+    N_values = np.asarray(N_values, dtype=float)
+
+    a = N_values[:, 0, 0] * N_values[:, 1, 1]
+    b = N_values[:, 0, 1] * N_values[:, 1, 0]
+
+    W_direct = a - b
+
+    quality = np.abs(W_direct) / (np.abs(a) + np.abs(b) + epsilon)
+    quality[~np.isfinite(quality)] = 0.0
+
+    return quality
+
+
+def compute_local_outlier_score(values, window=5, epsilon=1e-12):
+    values = np.asarray(values, dtype=float)
+    score = np.zeros_like(values, dtype=float)
+
+    n = len(values)
+
+    for k in range(n):
+        i0 = max(0, k - window)
+        i1 = min(n, k + window + 1)
+
+        local = values[i0:i1]
+        local = local[np.isfinite(local)]
+
+        if len(local) < 5 or not np.isfinite(values[k]):
+            score[k] = np.nan
+            continue
+
+        med = np.median(local)
+        mad = np.median(np.abs(local - med)) + epsilon
+
+        score[k] = np.abs(values[k] - med) / mad
+
+    return score
+
+
+def compute_reliability_scores(
+    noise_times,
+    tau_values,
+    W_values,
+    C_values,
+    N_values,
+    params,
+    h_tolerance=1e-12,
+    h_margin_scale=1e-6,
+    determinant_quality_scale=1e-10,
+    outlier_window=5,
+    outlier_threshold=4.0,
+    outlier_alpha=0.5,
+    bounce_window=1,
+):
+    """
+    Computes pointwise validity and reliability scores on the coarse C_E/W grid.
+    """
+
+    tau_values = np.asarray(tau_values, dtype=float)
+    W_values = np.asarray(W_values, dtype=float)
+    C_values = np.asarray(C_values, dtype=float)
+    N_values = np.asarray(N_values, dtype=float)
+
+    n = len(C_values)
+
+    x1, x2, sqrt_W = compute_capacity_arguments(
+        tau_values,
+        W_values,
+        params,
+    )
+
+    valid = (
+        np.isfinite(tau_values)
+        & np.isfinite(W_values)
+        & np.isfinite(C_values)
+        & (W_values > 0.0)
+        & np.isfinite(x1)
+        & np.isfinite(x2)
+        & (x1 >= 0.5 - h_tolerance)
+        & (x2 >= 0.5 - h_tolerance)
+    )
+
+    reliability = np.zeros(n, dtype=float)
+    reliability[valid] = 1.0
+
+    h_margin = np.minimum(x1 - 0.5, x2 - 0.5)
+
+    r_domain = np.clip(
+        h_margin / h_margin_scale,
+        0.0,
+        1.0,
+    )
+    r_domain[~np.isfinite(r_domain)] = 0.0
+
+    det_quality = compute_determinant_quality(N_values)
+
+    r_det = np.clip(
+        det_quality / determinant_quality_scale,
+        0.0,
+        1.0,
+    )
+    r_det[~np.isfinite(r_det)] = 0.0
+
+    outlier_score = compute_local_outlier_score(
+        C_values,
+        window=outlier_window,
+    )
+
+    bounce_mask = compute_tau_bounce_mask(
+        tau_values,
+        window=bounce_window,
+        local_window=max(3, outlier_window),
+        zero_fraction=0.05,
+    )
+
+    r_outlier = np.ones(n, dtype=float)
+
+    bad_outlier = (
+        np.isfinite(outlier_score)
+        & (outlier_score > outlier_threshold)
+        & (~bounce_mask)
+    )
+
+    r_outlier[bad_outlier] = np.exp(
+        -outlier_alpha
+        * (outlier_score[bad_outlier] - outlier_threshold)
+    )
+
+    r_outlier[~np.isfinite(r_outlier)] = 0.0
+
+    reliability = reliability * r_domain * r_det * r_outlier
+
+    reliability[~valid] = 0.0
+    reliability[~np.isfinite(reliability)] = 0.0
+
+    reliability = np.clip(
+        reliability,
+        0.0,
+        1.0,
+    )
+
+    diagnostics = {
+        "x1": x1,
+        "x2": x2,
+        "sqrt_W": sqrt_W,
+        "h_margin": h_margin,
+        "det_quality": det_quality,
+        "outlier_score": outlier_score,
+        "bounce_mask": bounce_mask,
+        "r_domain": r_domain,
+        "r_det": r_det,
+        "r_outlier": r_outlier,
+    }
+
+    return valid, reliability, diagnostics
+
+
+# ============================================================
+# FINE-GRID TAU DISCONTINUITY FILTER
+# ============================================================
+
+def detect_first_tau_discontinuity(
+    t_values,
+    tau_values,
+    local_window=5,
+    local_jump_factor=50.0,
+    min_time=None,
+    ignore_first_points=5,
+    epsilon=1e-300,
+):
+    """
+    Detects the first local one-step discontinuity in fine-grid tau(t).
+
+    For each fine-grid step:
+
+        step[k] = |tau[k] - tau[k-1]|
+
+    the function compares step[k] with neighboring steps:
+
+        local_reference = median of the steps at left and right,
+                          excluding step[k] itself.
+
+    A discontinuity is detected if:
+
+        step[k] > local_jump_factor * local_reference
+
+    This is intentionally applied to the fine-grid tau used in the tau plot,
+    not to tau_on_noise_times.
+    """
+
+    t_values = np.asarray(t_values, dtype=float)
+    tau_values = np.asarray(tau_values, dtype=float)
+
+    if len(t_values) != len(tau_values):
+        raise ValueError("t_values and tau_values must have the same length.")
+
+    if min_time is None:
+        min_time = 0.0
+
+    if len(tau_values) < 2 * local_window + 3:
+        return None, None, None
+
+    steps = np.abs(np.diff(tau_values))
+    step_times = t_values[1:]
+
+    n_steps = len(steps)
+
+    for step_idx in range(n_steps):
+        tau_idx = step_idx + 1
+
+        if step_idx < ignore_first_points:
+            continue
+
+        if step_times[step_idx] < min_time:
+            continue
+
+        current_step = steps[step_idx]
+
+        if not np.isfinite(current_step):
+            return tau_idx, t_values[tau_idx], np.inf
+
+        left_start = max(0, step_idx - local_window)
+        left_end = step_idx
+
+        right_start = step_idx + 1
+        right_end = min(n_steps, step_idx + local_window + 1)
+
+        left_steps = steps[left_start:left_end]
+        right_steps = steps[right_start:right_end]
+
+        local_steps = np.concatenate([left_steps, right_steps])
+        local_steps = local_steps[np.isfinite(local_steps)]
+
+        if len(local_steps) < max(3, local_window):
+            continue
+
+        local_reference = np.nanmedian(local_steps)
+
+        if not np.isfinite(local_reference) or local_reference <= 0.0:
+            local_reference = np.nanpercentile(local_steps, 75)
+
+        if not np.isfinite(local_reference) or local_reference <= 0.0:
+            local_reference = epsilon
+
+        jump_score = current_step / (local_reference + epsilon)
+
+        if jump_score > local_jump_factor:
+            return tau_idx, t_values[tau_idx], jump_score
+
+    return None, None, None
+
+
+# ============================================================
+# MAIN SIMULATION PIPELINE
+# ============================================================
 
 def run_simulation(
     params,
     t_max=40.0,
-    dt=0.01,
-    n_noise_times=120,
+    dt=0.0005,
+    n_noise_times=200,
     n_integral_points=400,
     rtol=1e-8,
     atol=1e-10,
+    h_tolerance=1e-12,
+    h_margin_scale=1e-6,
+    determinant_quality_scale=1e-10,
+    outlier_window=5,
+    outlier_threshold=4.0,
+    outlier_alpha=0.5,
+    bounce_window=1,
+    tau_jump_filter=True,
+    tau_jump_local_window=5,
+    tau_jump_local_factor=100.0,
 ):
+    """
+    Full numerical pipeline:
+
+        params -> Green functions -> fine-grid tau(t) -> W(t) -> C_E(t)
+
+    The tau discontinuity filter is applied to the fine-grid tau used for
+    the tau plot. If a discontinuity is detected, all later coarse C_E/W
+    points are marked invalid.
+    """
+
+    # ------------------------------------------------------------
+    # 1. Solve Green functions
+    # ------------------------------------------------------------
+
     t, y = solve_green_functions(
         params,
         t_max=t_max,
@@ -542,10 +1004,27 @@ def run_simulation(
     t_full, y_full = build_full_green_arrays(t, y)
     green_interp = make_green_interpolators(t_full, y_full)
 
-    tau_full = compute_tau_values(t_full, green_interp, params)
+    # ------------------------------------------------------------
+    # 2. Compute tau(t) on the fine Green-function grid
+    # ------------------------------------------------------------
+
+    tau_full = compute_tau_values(
+        t_full,
+        green_interp,
+        params,
+    )
+
     tau = tau_full[1:]
 
-    noise_times = np.linspace(0.0, t_max, n_noise_times)
+    # ------------------------------------------------------------
+    # 3. Compute W(t) on the coarse/noise grid
+    # ------------------------------------------------------------
+
+    noise_times = np.linspace(
+        0.0,
+        t_max,
+        n_noise_times,
+    )
 
     W_values = np.zeros_like(noise_times)
     N_values = []
@@ -563,29 +1042,118 @@ def run_simulation(
 
     N_values = np.array(N_values)
 
-    tau_on_noise_times = compute_tau_values(noise_times, green_interp, params)
-    C_values = compute_capacity_E(tau_on_noise_times, W_values, params)
+    # ------------------------------------------------------------
+    # 4. Compute tau and capacity on the coarse/noise grid
+    # ------------------------------------------------------------
 
-    ratio_tau_sqrtW = np.full_like(W_values, np.nan, dtype=float)
+    tau_on_noise_times = compute_tau_values(
+        noise_times,
+        green_interp,
+        params,
+    )
+
+    C_values = compute_capacity_E(
+        tau_on_noise_times,
+        W_values,
+        params,
+    )
+
+    ratio_tau_sqrtW = np.full_like(
+        W_values,
+        np.nan,
+        dtype=float,
+    )
 
     mask_ratio = W_values > 0.0
+
     ratio_tau_sqrtW[mask_ratio] = (
         np.abs(tau_on_noise_times[mask_ratio])
         / np.sqrt(W_values[mask_ratio])
     )
 
-    valid_C = np.isfinite(C_values)
+    # ------------------------------------------------------------
+    # 5. Capacity-input diagnostics
+    # ------------------------------------------------------------
 
-    if np.any(valid_C):
-        max_idx = np.nanargmax(C_values)
+    diagnostics = diagnose_capacity_inputs(
+        noise_times,
+        tau_on_noise_times,
+        W_values,
+        C_values,
+        params,
+    )
+
+    # ------------------------------------------------------------
+    # 6. Reliability score before tau-jump truncation
+    # ------------------------------------------------------------
+
+    valid_C, reliability, reliability_diagnostics = compute_reliability_scores(
+        noise_times=noise_times,
+        tau_values=tau_on_noise_times,
+        W_values=W_values,
+        C_values=C_values,
+        N_values=N_values,
+        params=params,
+        h_tolerance=h_tolerance,
+        h_margin_scale=h_margin_scale,
+        determinant_quality_scale=determinant_quality_scale,
+        outlier_window=outlier_window,
+        outlier_threshold=outlier_threshold,
+        outlier_alpha=outlier_alpha,
+        bounce_window=bounce_window,
+    )
+
+    # ------------------------------------------------------------
+    # 7. Fine-grid tau local-step discontinuity filter
+    # ------------------------------------------------------------
+
+    tau_jump_idx = None
+    tau_jump_time = None
+    tau_jump_score = None
+
+    if tau_jump_filter:
+        tau_jump_idx, tau_jump_time, tau_jump_score = detect_first_tau_discontinuity(
+            t_values=t,
+            tau_values=tau,
+            local_window=tau_jump_local_window,
+            local_jump_factor=tau_jump_local_factor,
+            min_time=params.d,
+            ignore_first_points=5,
+        )
+
+        if tau_jump_time is not None:
+            corrupted_mask = noise_times >= tau_jump_time
+
+            valid_C[corrupted_mask] = False
+            reliability[corrupted_mask] = 0.0
+
+    # ------------------------------------------------------------
+    # 8. Recompute summary quantities AFTER tau-jump filter
+    # ------------------------------------------------------------
+
+    valid_fraction = float(np.mean(valid_C))
+    mean_reliability = float(np.nanmean(reliability))
+
+    valid_for_max = valid_C & np.isfinite(C_values)
+
+    if np.any(valid_for_max):
+        valid_indices = np.where(valid_for_max)[0]
+        local_max_idx = np.nanargmax(C_values[valid_for_max])
+        max_idx = valid_indices[local_max_idx]
+
         max_C = C_values[max_idx]
         t_max_C = noise_times[max_idx]
         delay_max_C = t_max_C - params.d
+
     else:
         max_idx = None
         max_C = np.nan
         t_max_C = np.nan
         delay_max_C = np.nan
+
+    # ------------------------------------------------------------
+    # 9. Return outputs
+    # ------------------------------------------------------------
 
     return {
         "params": params,
@@ -606,4 +1174,17 @@ def run_simulation(
         "max_C": max_C,
         "t_max_C": t_max_C,
         "delay_max_C": delay_max_C,
+        "diagnostics": diagnostics,
+        "valid_C": valid_C,
+        "reliability": reliability,
+        "reliability_diagnostics": reliability_diagnostics,
+        "valid_fraction": valid_fraction,
+        "mean_reliability": mean_reliability,
+        "tau_jump_filter": tau_jump_filter,
+        "tau_jump_detected": tau_jump_time is not None,
+        "tau_jump_idx": tau_jump_idx,
+        "tau_jump_time": tau_jump_time,
+        "tau_jump_score": tau_jump_score,
+        "tau_jump_local_window": tau_jump_local_window,
+        "tau_jump_local_factor": tau_jump_local_factor,
     }

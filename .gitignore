@@ -2,6 +2,11 @@ __pycache__/
 *.pyc
 .env
 .venv/
+
 outputs/*
 !outputs/.gitkeep
+
+notebooks/*
+!notebooks/.gitkeep
+
 .streamlit/secrets.toml
