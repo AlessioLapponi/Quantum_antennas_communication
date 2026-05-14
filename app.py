@@ -97,7 +97,7 @@ h_margin_scale = st.sidebar.number_input(
 
 determinant_quality_scale = st.sidebar.number_input(
     "determinant quality scale",
-    value=1e-10,
+    value=1e-14,
     format="%.1e",
     help=(
         "Larger values make the determinant filter stricter. "

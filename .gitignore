@@ -9,4 +9,15 @@ outputs/*
 notebooks/*
 !notebooks/.gitkeep
 
+models/*
+!models/.gitkeep
+!models/hist_gradient_boosting_CE.joblib
+!models/hist_gradient_boosting_scaler.joblib
+!models/hist_gradient_boosting_metrics.json
+!models/torch_capacity_mlp.pt
+!models/torch_capacity_scaler.joblib
+!models/torch_capacity_metrics.json
+!models/torch_capacity_loss_history.csv
+!models/torch_capacity_loss_curve.png
+
 .streamlit/secrets.toml

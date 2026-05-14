@@ -1,0 +1,17 @@
+{
+  "model": "HistGradientBoostingRegressor",
+  "reliability_threshold": 0.2,
+  "use_log_target": false,
+  "feature_columns": [
+    "gamma_mean",
+    "gamma_delta",
+    "omega_mean",
+    "omega_delta",
+    "t"
+  ],
+  "train_rows": 299074,
+  "test_rows": 33281,
+  "mae": 0.04357493025322132,
+  "rmse": 0.09788192217631116,
+  "r2": 0.9512449288490347
+}

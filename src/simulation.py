@@ -970,7 +970,7 @@ def run_simulation(
     atol=1e-10,
     h_tolerance=1e-12,
     h_margin_scale=1e-6,
-    determinant_quality_scale=1e-10,
+    determinant_quality_scale=1e-14,
     outlier_window=5,
     outlier_threshold=4.0,
     outlier_alpha=0.5,

@@ -1,0 +1,23 @@
+{
+  "model": "PyTorch CapacityMLP",
+  "reliability_threshold": 0.2,
+  "use_log_target": false,
+  "feature_columns": [
+    "gamma_mean",
+    "gamma_delta",
+    "omega_mean",
+    "omega_delta",
+    "t"
+  ],
+  "train_rows": 299074,
+  "test_rows": 33281,
+  "epochs": 100,
+  "best_epoch": 94,
+  "best_test_loss": 0.00044468317193807,
+  "mae": 0.015283233199451454,
+  "rmse": 0.031034969973253786,
+  "r2": 0.9950986301493471,
+  "hidden_dim": 256,
+  "num_hidden_layers": 4,
+  "num_frequencies": 8
+}

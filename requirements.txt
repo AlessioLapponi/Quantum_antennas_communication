@@ -3,3 +3,6 @@ scipy
 matplotlib
 streamlit
 pandas
+scikit-learn
+joblib
+torch
