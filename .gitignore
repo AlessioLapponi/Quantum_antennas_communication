@@ -1,23 +1,47 @@
+# Python cache / bytecode
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+
+# Environments / secrets
 .env
 .venv/
+.streamlit/secrets.toml
 
+# Generated outputs and datasets
 outputs/*
 !outputs/.gitkeep
 
+# Notebooks: keep folder only, ignore notebook work/checkpoints
 notebooks/*
 !notebooks/.gitkeep
+notebooks/.ipynb_checkpoints/
+.ipynb_checkpoints/
 
+# Models: ignore all by default...
 models/*
 !models/.gitkeep
-!models/hist_gradient_boosting_CE.joblib
-!models/hist_gradient_boosting_scaler.joblib
-!models/hist_gradient_boosting_metrics.json
-!models/torch_capacity_mlp.pt
-!models/torch_capacity_scaler.joblib
-!models/torch_capacity_metrics.json
-!models/torch_capacity_loss_history.csv
-!models/torch_capacity_loss_curve.png
 
-.streamlit/secrets.toml
+# ...but keep final curve surrogate models and useful diagnostics
+!models/pca_ml_basis.joblib
+!models/pca_ml_feature_scaler.joblib
+!models/pca_ml_metrics.json
+!models/pca_ml_example_curves.png
+!models/pca_ml_explained_variance.png
+!models/pca_ml_per_curve_rmse_hist.png
+!models/pca_ml_worst_curves.png
+
+!models/torch_curve_capacity_mlp.pt
+!models/torch_curve_feature_scaler.joblib
+!models/torch_curve_metrics.json
+!models/torch_curve_loss_curve.png
+!models/torch_curve_example_curves.png
+!models/torch_curve_per_curve_rmse_hist.png
+!models/torch_curve_worst_curves.png
+
+# Oversized PCA-ML binary is intentionally not tracked
+models/pca_ml_curve_model.joblib
+
+# Legacy pointwise models are not part of the main runnable app
+models/legacy_pointwise/

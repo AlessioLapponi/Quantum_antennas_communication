@@ -182,16 +182,25 @@ run_button = st.sidebar.button("Run simulation")
 # HELPER PLOTTING FUNCTIONS
 # ============================================================
 
-def show_tau_plot(t, tau, d, tau_jump_time=None):
+def show_tau_plot(t, tau, d, tau_jump_time=None, tau_zero_times=None):
     fig, ax = plt.subplots(figsize=(8, 4))
 
     ax.plot(t, tau, label=r"$\tau(t)$")
     ax.axvline(d, linestyle="--", label=r"$t=d$")
 
+    if tau_zero_times is not None:
+        for zero_time in tau_zero_times:
+            ax.axvline(
+                zero_time,
+                linestyle=":",
+                alpha=0.4,
+                label=r"$\tau=0$ crossing" if zero_time == tau_zero_times[0] else None,
+            )
+
     if tau_jump_time is not None:
         ax.axvline(
             tau_jump_time,
-            linestyle=":",
+            linestyle="-.",
             label=r"detected $\tau$ discontinuity",
         )
 
@@ -530,6 +539,7 @@ if run_button:
         results["tau"],
         d,
         tau_jump_time=results["tau_jump_time"],
+        tau_zero_times=results["tau_zero_times"],
     )
 
     st.subheader("Noise determinant")

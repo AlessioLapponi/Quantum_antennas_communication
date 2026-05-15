@@ -650,6 +650,43 @@ def diagnose_capacity_inputs(t_values, tau_values, W_values, C_values, params, h
 # RELIABILITY
 # ============================================================
 
+def detect_tau_zero_crossing_times_from_arrays(t_values, tau_values, d):
+    t_values = np.asarray(t_values, dtype=float)
+    tau_values = np.asarray(tau_values, dtype=float)
+
+    zero_times = []
+
+    for k in range(len(tau_values) - 1):
+        t0 = t_values[k]
+        t1 = t_values[k + 1]
+
+        tau0 = tau_values[k]
+        tau1 = tau_values[k + 1]
+
+        if t0 < d or t1 < d:
+            continue
+
+        if not (
+            np.isfinite(t0)
+            and np.isfinite(t1)
+            and np.isfinite(tau0)
+            and np.isfinite(tau1)
+        ):
+            continue
+
+        if tau0 * tau1 < 0.0:
+            denominator = tau1 - tau0
+
+            if denominator == 0.0:
+                zero_time = 0.5 * (t0 + t1)
+            else:
+                zero_time = t0 - tau0 * (t1 - t0) / denominator
+
+            if zero_time >= d:
+                zero_times.append(zero_time)
+
+    return np.array(sorted(zero_times), dtype=float)
+
 def compute_tau_bounce_mask(
     tau_values,
     window=2,
@@ -1016,6 +1053,12 @@ def run_simulation(
 
     tau = tau_full[1:]
 
+    tau_zero_times = detect_tau_zero_crossing_times_from_arrays(
+        t_values=t,
+        tau_values=tau,
+        d=params.d,
+    )
+
     # ------------------------------------------------------------
     # 3. Compute W(t) on the coarse/noise grid
     # ------------------------------------------------------------
@@ -1187,4 +1230,5 @@ def run_simulation(
         "tau_jump_score": tau_jump_score,
         "tau_jump_local_window": tau_jump_local_window,
         "tau_jump_local_factor": tau_jump_local_factor,
+        "tau_zero_times": tau_zero_times,
     }
