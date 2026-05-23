@@ -1,129 +1,115 @@
-# Antennas Surrogate Model
+# Quantum Antennas Communication — Gaussian Channel Surrogate Model
 
-This repository contains a numerical simulator and preliminary surrogate-modeling workflow for a Gaussian communication channel between two harmonic oscillator detectors interacting through a scalar field.
+This project simulates the long-time interaction channel between two non-identical harmonic oscillator detectors and builds surrogate models for the energy-constrained classical capacity \(C_E(t)\).
 
-The project is currently under active development. The numerical simulation pipeline is functional, while the first surrogate models are exploratory and not yet reliable enough for deployment or scientific use.
+The workflow combines:
+
+1. a numerical simulation of the physical channel;
+2. automated generation of training data;
+3. curve-level surrogate modelling;
+4. a Streamlit app comparing numerical and surrogate predictions.
+
+The main trainable input parameters are:
+
+\[
+\gamma_A,\quad \gamma_B,\quad \omega_A,\quad \omega_B.
+\]
+
+The remaining physical and numerical parameters are fixed to the values used during training.
+
+---
 
 ## Project goal
 
-The goal is to approximate the energy-constrained classical capacity
+The numerical simulation computes:
 
-$$
-C_E(t)
-$$
+- the transmissivity \(\tau(t)\);
+- the noise determinant \(W(t)\);
+- the energy-constrained classical capacity \(C_E(t)\).
 
-of the detector channel as a function of the physical input parameters:
+The final surrogate model aims to approximate the full capacity curve:
 
-$$
-\gamma_A,\gamma_B,\omega_A,\omega_B
-$$
-
-where:
-
-- $\gamma_A,\gamma_B$ are the detector-field coupling/damping parameters;
-- $\omega_A,\omega_B$ are the oscillator frequencies;
-- $t$ is the evolution time.
-
-The final objective is to build a surrogate model able to rapidly approximate the full capacity curve $C_E(t)$, avoiding the expensive numerical simulation.
-
-## Current status
-
-The repository currently includes:
-
-- a numerical simulation of the channel dynamics;
-- computation of:
-  - transmissivity $\tau(t)$;
-  - noise determinant $W(t)$;
-  - energy-constrained classical capacity $C_E(t)$;
-- reliability diagnostics for simulated data;
-- automatic training-data generation;
-- preliminary scikit-learn and PyTorch surrogate models;
-- a Streamlit interface for numerical simulation and model comparison.
-
-The simulator is based on the Green-function formulation of the detector-channel model, where the transmissivity is computed from $G_{BA}$, $\dot{G}_{BA}$, and $\ddot{G}_{BA}$, while the noise is computed from the covariance/noise matrix determinant.
-
-## Important limitation
-
-The first surrogate models are **not yet accurate enough**.
-
-The current models capture only a rough global trend of $C_E(t)$, but they can produce noisy or unreliable pointwise predictions, especially for non-trivial asymmetric inputs such as:
-
-$$
-\gamma_A \neq \gamma_B
-$$
-
-or
-
-$$
-\omega_A \neq \omega_B.
-$$
-
-Therefore, the trained models should currently be considered as **proof-of-concept models**, not final scientific surrogates.
-
-## Why the first models are limited
-
-The first approach used pointwise regression:
-
-$$
-(\gamma_A,\gamma_B,\omega_A,\omega_B,t) \rightarrow C_E(t).
-$$
-
-This does not explicitly enforce that the predicted values over time must form one smooth physical curve. As a result, the models may predict scattered time-point values instead of a coherent $C_E(t)$ function.
-
-## Planned improvements
-
-The next development step is to move from pointwise prediction to curve-level surrogate modeling.
-
-Planned improvements include:
-
-### 1. Curve-based surrogate model
-
-Train models of the form:
-
-$$
+\[
 (\gamma_A,\gamma_B,\omega_A,\omega_B)
-\rightarrow
-[C_E(t_1),...,C_E(t_N)].
-$$
+\longrightarrow
+C_E(t_1),\ldots,C_E(t_{200}).
+\]
 
-### 2. PCA / basis-function surrogate
+This is useful because the full numerical simulation can be slow and may become unstable for some parameter configurations.
 
-Decompose simulated capacity curves into smooth basis functions and train a regression model to predict the basis coefficients.
+---
 
-### 3. Physics-informed neural surrogate
+## Current model strategy
 
-Add physical constraints such as:
+Earlier pointwise surrogates were tested:
 
-- $C_E(t) \geq 0$;
-- $C_E(t<d)=0$;
-- smoothness in time except around physical $|\tau|$-bounce regions;
-- reliability-weighted loss using the numerical diagnostics.
+\[
+(\gamma_A,\gamma_B,\omega_A,\omega_B,t)\rightarrow C_E(t).
+\]
 
-### 4. Improved validation
+They captured the broad trend but produced noisy, time-incoherent curves. The current approach therefore uses **curve-level surrogates**.
 
-Evaluate models at the full-curve level, including:
+The current main surrogate is:
 
-- pointwise MAE/RMSE;
-- curve-level error;
-- maximum-capacity error;
-- time-of-maximum error.
+- **PyTorch curve-output neural network**  
+  Predicts the full \(C_E(t)\) curve directly.
+
+A PCA-based scikit-learn model is also supported architecturally, but the trained PCA-ML binary is not tracked if it exceeds GitHub’s standard file-size limit.
+
+---
 
 ## Repository structure
 
 ```text
 .
-├── app.py                         # Streamlit numerical simulation app
-├── surrogate_app.py               # Streamlit app comparing numerical and surrogate outputs
-├── generate_parameter_inputs.py   # Generates constrained input parameter samples
-├── generate_training_data_full.py # Runs simulations and saves training batches
-├── train_surrogate_ml.py          # scikit-learn baseline surrogate
-├── train_surrogate_torch.py       # PyTorch neural-network surrogate
+├── app.py
+├── surrogate_app.py
+├── readme.md
+├── requirements.txt
+│
+├── generate_parameter_inputs.py
+├── generate_training_data_test.py
+├── generate_training_data_full.py
+├── prepare_curve_dataset.py
+│
+├── train_surrogate_pca_ml.py
+├── train_surrogate_curve_torch.py
+│
 ├── src/
-│   ├── simulation.py              # Core numerical simulation code
-│   ├── data_loading.py            # Batch loading and filtering utilities
-│   ├── features.py                # Feature preprocessing utilities
-│   ├── torch_models.py            # PyTorch model definitions
-│   └── surrogate_predictors.py    # Model loading and prediction utilities
-├── models/                        # Trained models, ignored except .gitkeep
-├── outputs/                       # Generated data, ignored except .gitkeep
-└── notebooks/                     # Experimental scripts/notebooks, ignored except .gitkeep
+│   ├── __init__.py
+│   ├── simulation.py
+│   ├── bounce_detection.py
+│   ├── surrogate_predictors.py
+│   └── torch_curve_models.py
+│
+├── models/
+│   ├── .gitkeep
+│   ├── torch_curve_capacity_mlp.pt
+│   ├── torch_curve_feature_scaler.joblib
+│   ├── torch_curve_metrics.json
+│   ├── torch_curve_loss_curve.png
+│   ├── torch_curve_example_curves.png
+│   ├── torch_curve_per_curve_rmse_hist.png
+│   ├── torch_curve_worst_curves.png
+│   │
+│   ├── pca_ml_basis.joblib
+│   ├── pca_ml_feature_scaler.joblib
+│   ├── pca_ml_metrics.json
+│   ├── pca_ml_example_curves.png
+│   ├── pca_ml_explained_variance.png
+│   ├── pca_ml_per_curve_rmse_hist.png
+│   └── pca_ml_worst_curves.png
+│
+├── experiments/
+│   └── pointwise/
+│       ├── train_surrogate_ml.py
+│       ├── train_surrogate_torch.py
+│       ├── data_loading.py
+│       ├── features.py
+│       └── torch_models.py
+│
+├── outputs/
+│   └── .gitkeep
+│
+└── notebooks/
+    └── .gitkeep

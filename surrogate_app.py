@@ -1,101 +1,155 @@
+from pathlib import Path
+
 import numpy as np
+import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
+import joblib
+import torch
 
 from src.simulation import ChannelParams, run_simulation
-from src.surrogate_predictors import (
-    load_ml_surrogate,
-    predict_ml_capacity,
-    load_torch_surrogate,
-    predict_torch_capacity,
-)
+from src.torch_curve_models import CurveCapacityMLP
 
+
+# ============================================================
+# APP CONFIG
+# ============================================================
 
 st.set_page_config(
-    page_title="Surrogate Channel Comparison",
+    page_title="Gaussian Channel Surrogate Comparison",
     layout="wide",
 )
 
 st.title("Gaussian Channel Surrogate Comparison")
 
 st.markdown(
-    """
-This app compares the full numerical simulation with trained surrogate models:
+    r"""
+This app compares the full numerical simulation with trained curve-level surrogate models.
 
-- numerical simulation
-- scikit-learn ML surrogate
-- PyTorch neural-network surrogate
+The trainable input parameters are:
+
+\[
+\gamma_A,\quad \gamma_B,\quad \omega_A,\quad \omega_B.
+\]
+
+All other physical and numerical parameters are fixed to the values used during
+training.
 """
 )
 
 
 # ============================================================
-# SIDEBAR PARAMETERS
+# FIXED PARAMETERS USED DURING TRAINING
 # ============================================================
 
-st.sidebar.header("Physical parameters")
+SIGMA = 0.01
+D = 1.0
+M_A = 1.0
+M_B = 1.0
+E = 100.0
 
-gamma_A = st.sidebar.number_input("gamma_A", value=0.010, format="%.6f")
-gamma_B = st.sidebar.number_input("gamma_B", value=0.010, format="%.6f")
+T_MAX = 40.0
+N_TIME_POINTS = 200
 
-omega_A = st.sidebar.number_input("omega_A", value=1.0, format="%.6f")
-omega_B = st.sidebar.number_input("omega_B", value=1.0, format="%.6f")
+SIMULATION_KWARGS = {
+    "t_max": T_MAX,
+    "dt": 0.0005,
+    "n_noise_times": N_TIME_POINTS,
+    "n_integral_points": 400,
+    "rtol": 1e-8,
+    "atol": 1e-10,
+    "h_tolerance": 1e-12,
+    "h_margin_scale": 1e-6,
+    "determinant_quality_scale": 1e-14,
+    "outlier_window": 5,
+    "outlier_threshold": 4.0,
+    "outlier_alpha": 0.5,
+    "bounce_window": 1,
+    "tau_jump_filter": True,
+    "tau_jump_local_window": 5,
+    "tau_jump_local_factor": 100.0,
+}
 
-m_A = st.sidebar.number_input("m_A", value=1.0, format="%.6f")
-m_B = st.sidebar.number_input("m_B", value=1.0, format="%.6f")
 
-sigma = st.sidebar.number_input("sigma", value=0.01, format="%.6f")
-d = st.sidebar.number_input("d", value=1.0, format="%.6f")
+# ============================================================
+# MODEL PATHS
+# ============================================================
 
-E = st.sidebar.number_input("Energy bound E", value=100.0, format="%.6f")
+TORCH_MODEL_PATH = Path("models") / "torch_curve_capacity_mlp.pt"
+TORCH_SCALER_PATH = Path("models") / "torch_curve_feature_scaler.joblib"
+
+PCA_ML_MODEL_PATH = Path("models") / "pca_ml_curve_model.joblib"
+PCA_ML_SCALER_PATH = Path("models") / "pca_ml_feature_scaler.joblib"
+PCA_ML_BASIS_PATH = Path("models") / "pca_ml_basis.joblib"
 
 
-st.sidebar.header("Prediction grid")
+# ============================================================
+# SIDEBAR
+# ============================================================
 
-t_max = st.sidebar.number_input("t_max", value=40.0, format="%.3f")
+st.sidebar.header("Input parameters")
 
-n_time_points = st.sidebar.number_input(
-    "Number of plotted time points",
-    value=200,
-    min_value=20,
-    step=20,
+gamma_A = st.sidebar.number_input(
+    r"$\gamma_A$",
+    value=0.010,
+    min_value=0.001,
+    max_value=0.035,
+    step=0.001,
+    format="%.6f",
 )
 
-t_values = np.linspace(0.0, t_max, int(n_time_points))
+gamma_B = st.sidebar.number_input(
+    r"$\gamma_B$",
+    value=0.010,
+    min_value=0.001,
+    max_value=0.035,
+    step=0.001,
+    format="%.6f",
+)
 
+omega_A = st.sidebar.number_input(
+    r"$\omega_A$",
+    value=1.0,
+    min_value=0.1,
+    max_value=1.5,
+    step=0.05,
+    format="%.6f",
+)
 
-st.sidebar.header("Numerical simulation settings")
+omega_B = st.sidebar.number_input(
+    r"$\omega_B$",
+    value=1.0,
+    min_value=0.1,
+    max_value=1.5,
+    step=0.05,
+    format="%.6f",
+)
+
+st.sidebar.header("What to compute")
 
 run_numerical = st.sidebar.checkbox(
-    "Run numerical simulation",
+    "Full numerical simulation",
+    value=False,
+    help="If disabled, the expensive numerical simulation is not run.",
+)
+
+run_pca_ml = st.sidebar.checkbox(
+    "PCA-ML surrogate",
+    value=False,
+    help="Optional scikit-learn curve surrogate. Works only if the PCA-ML model file is available.",
+)
+
+run_torch_curve = st.sidebar.checkbox(
+    "PyTorch curve surrogate",
     value=True,
 )
-
-dt = st.sidebar.number_input("dt", value=0.0005, format="%.5f")
-
-n_integral_points = st.sidebar.number_input(
-    "Integral points for W",
-    value=400,
-    min_value=50,
-    step=50,
-)
-
-rtol = st.sidebar.number_input("rtol", value=1e-8, format="%.1e")
-atol = st.sidebar.number_input("atol", value=1e-10, format="%.1e")
-
-
-st.sidebar.header("Models to show")
-
-show_numerical = st.sidebar.checkbox("Show numerical simulation", value=True)
-show_ml = st.sidebar.checkbox("Show scikit-learn ML surrogate", value=True)
-show_torch = st.sidebar.checkbox("Show PyTorch NN surrogate", value=True)
 
 show_error_plots = st.sidebar.checkbox(
-    "Show error plots against numerical simulation",
+    "Show errors against numerical simulation",
     value=True,
 )
 
-show_table = st.sidebar.checkbox(
+show_prediction_table = st.sidebar.checkbox(
     "Show prediction table",
     value=False,
 )
@@ -104,97 +158,245 @@ run_button = st.sidebar.button("Run comparison")
 
 
 # ============================================================
-# HELPERS
+# FEATURE ENGINEERING
+# ============================================================
+
+def build_physical_features_from_inputs(
+    gamma_A,
+    gamma_B,
+    omega_A,
+    omega_B,
+    sigma=SIGMA,
+    d=D,
+):
+    """
+    Builds the same physics-informed features used during curve-model training.
+    """
+
+    gamma_mean = 0.5 * (gamma_A + gamma_B)
+    gamma_delta = gamma_B - gamma_A
+
+    omega_mean = 0.5 * (omega_A + omega_B)
+    omega_delta = omega_B - omega_A
+
+    Sigma2_A = np.sqrt(8.0 / np.pi) * gamma_A / sigma - omega_A**2
+    Sigma2_B = np.sqrt(8.0 / np.pi) * gamma_B / sigma - omega_B**2
+
+    Sigma2_mean = 0.5 * (Sigma2_A + Sigma2_B)
+    Sigma2_delta = Sigma2_B - Sigma2_A
+
+    coupling_delay = 2.0 * np.sqrt(gamma_A * gamma_B) / d
+
+    abs_gamma_delta = abs(gamma_delta)
+    abs_omega_delta = abs(omega_delta)
+
+    gamma_delta_ratio = gamma_delta / (gamma_mean + 1e-12)
+    omega_delta_ratio = omega_delta / (omega_mean + 1e-12)
+
+    X = np.array(
+        [[
+            gamma_A,
+            gamma_B,
+            gamma_mean,
+            gamma_delta,
+            abs_gamma_delta,
+            gamma_delta_ratio,
+
+            omega_A,
+            omega_B,
+            omega_mean,
+            omega_delta,
+            abs_omega_delta,
+            omega_delta_ratio,
+
+            Sigma2_A,
+            Sigma2_B,
+            Sigma2_mean,
+            Sigma2_delta,
+
+            coupling_delay,
+        ]],
+        dtype=float,
+    )
+
+    derived = {
+        "gamma_mean": gamma_mean,
+        "gamma_delta": gamma_delta,
+        "omega_mean": omega_mean,
+        "omega_delta": omega_delta,
+        "Sigma2_A": Sigma2_A,
+        "Sigma2_B": Sigma2_B,
+        "Sigma2_mean": Sigma2_mean,
+        "Sigma2_delta": Sigma2_delta,
+        "coupling_delay": coupling_delay,
+    }
+
+    return X, derived
+
+
+# ============================================================
+# MODEL LOADING
 # ============================================================
 
 @st.cache_resource
-def cached_load_ml_surrogate():
-    return load_ml_surrogate()
+@st.cache_resource
+def load_torch_curve_surrogate():
+    if not TORCH_MODEL_PATH.exists():
+        raise FileNotFoundError(f"Missing PyTorch model: {TORCH_MODEL_PATH}")
 
+    if not TORCH_SCALER_PATH.exists():
+        raise FileNotFoundError(f"Missing PyTorch scaler: {TORCH_SCALER_PATH}")
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    checkpoint = torch.load(
+        TORCH_MODEL_PATH,
+        map_location=device,
+        weights_only=False,
+    )
+
+    model_config = checkpoint["model_config"]
+
+    causal_mask = checkpoint.get("causal_mask", None)
+
+    model = CurveCapacityMLP(
+        input_dim=model_config["input_dim"],
+        output_dim=model_config["output_dim"],
+        hidden_dim=model_config["hidden_dim"],
+        num_hidden_layers=model_config["num_hidden_layers"],
+        dropout=model_config.get("dropout", 0.0),
+        use_softplus=model_config.get("use_softplus", True),
+        causal_mask=causal_mask,
+    )
+
+    model.load_state_dict(checkpoint["model_state_dict"])
+    model.to(device)
+    model.eval()
+
+    scaler = joblib.load(TORCH_SCALER_PATH)
+
+    t_grid = np.asarray(checkpoint["t_grid"], dtype=float)
+
+    return model, scaler, t_grid, device, checkpoint
 
 @st.cache_resource
-def cached_load_torch_surrogate():
-    return load_torch_surrogate()
+def load_pca_ml_surrogate():
+    if not PCA_ML_MODEL_PATH.exists():
+        raise FileNotFoundError(
+            f"Missing PCA-ML model: {PCA_ML_MODEL_PATH}. "
+            "This is expected if the oversized PCA-ML binary is not tracked."
+        )
+
+    if not PCA_ML_SCALER_PATH.exists():
+        raise FileNotFoundError(f"Missing PCA-ML scaler: {PCA_ML_SCALER_PATH}")
+
+    if not PCA_ML_BASIS_PATH.exists():
+        raise FileNotFoundError(f"Missing PCA basis: {PCA_ML_BASIS_PATH}")
+
+    model = joblib.load(PCA_ML_MODEL_PATH)
+    scaler = joblib.load(PCA_ML_SCALER_PATH)
+    pca = joblib.load(PCA_ML_BASIS_PATH)
+
+    # The PCA-ML model uses the same fixed grid as training.
+    t_grid = np.linspace(0.0, T_MAX, N_TIME_POINTS)
+
+    return model, scaler, pca, t_grid
 
 
-def plot_capacity_comparison(
-    t_values,
-    numerical_C=None,
-    ml_C=None,
-    torch_C=None,
+# ============================================================
+# PREDICTION FUNCTIONS
+# ============================================================
+
+def predict_torch_curve(
+    gamma_A,
+    gamma_B,
+    omega_A,
+    omega_B,
 ):
-    fig, ax = plt.subplots(figsize=(9, 5))
+    model, scaler, t_grid, device, checkpoint = load_torch_curve_surrogate()
 
-    if numerical_C is not None and show_numerical:
-        ax.plot(
-            t_values,
-            numerical_C,
-            label="Numerical simulation",
-            linewidth=2,
-        )
+    X, _ = build_physical_features_from_inputs(
+        gamma_A=gamma_A,
+        gamma_B=gamma_B,
+        omega_A=omega_A,
+        omega_B=omega_B,
+    )
 
-    if ml_C is not None and show_ml:
-        ax.plot(
-            t_values,
-            ml_C,
-            linestyle="--",
-            label="scikit-learn surrogate",
-        )
+    X_scaled = scaler.transform(X)
 
-    if torch_C is not None and show_torch:
-        ax.plot(
-            t_values,
-            torch_C,
-            linestyle=":",
-            label="PyTorch NN surrogate",
-        )
+    X_tensor = torch.tensor(
+        X_scaled,
+        dtype=torch.float32,
+        device=device,
+    )
 
-    ax.axvline(d, linestyle="--", color="gray", alpha=0.6, label=r"$t=d$")
+    with torch.no_grad():
+        y_pred = model(X_tensor).cpu().numpy()[0]
 
-    ax.set_xlabel("t")
-    ax.set_ylabel(r"$C_E(t)$")
-    ax.grid(True)
-    ax.legend()
+    y_pred = np.maximum(y_pred, 0.0)
+    y_pred[t_grid < D] = 0.0
 
-    st.pyplot(fig)
+    return t_grid, y_pred
 
 
-def plot_error_against_numerical(
-    t_values,
-    numerical_C,
-    ml_C=None,
-    torch_C=None,
+def predict_pca_ml_curve(
+    gamma_A,
+    gamma_B,
+    omega_A,
+    omega_B,
 ):
-    fig, ax = plt.subplots(figsize=(9, 5))
+    model, scaler, pca, t_grid = load_pca_ml_surrogate()
 
-    if ml_C is not None and show_ml:
-        ax.plot(
-            t_values,
-            ml_C - numerical_C,
-            label="ML - numerical",
-        )
+    X, _ = build_physical_features_from_inputs(
+        gamma_A=gamma_A,
+        gamma_B=gamma_B,
+        omega_A=omega_A,
+        omega_B=omega_B,
+    )
 
-    if torch_C is not None and show_torch:
-        ax.plot(
-            t_values,
-            torch_C - numerical_C,
-            label="NN - numerical",
-        )
+    X_scaled = scaler.transform(X)
 
-    ax.axhline(0.0, linestyle="--", color="gray")
-    ax.axvline(d, linestyle="--", color="gray", alpha=0.6)
+    coeffs = model.predict(X_scaled)
+    y_pred = pca.inverse_transform(coeffs)[0]
 
-    ax.set_xlabel("t")
-    ax.set_ylabel(r"Prediction error")
-    ax.grid(True)
-    ax.legend()
+    y_pred = np.maximum(y_pred, 0.0)
+    y_pred[t_grid < D] = 0.0
 
-    st.pyplot(fig)
+    return t_grid, y_pred
 
+
+def run_numerical_simulation(
+    gamma_A,
+    gamma_B,
+    omega_A,
+    omega_B,
+):
+    params = ChannelParams(
+        gamma_A=gamma_A,
+        gamma_B=gamma_B,
+        omega_A=omega_A,
+        omega_B=omega_B,
+        sigma=SIGMA,
+        d=D,
+        m_A=M_A,
+        m_B=M_B,
+        E=E,
+    )
+
+    results = run_simulation(
+        params=params,
+        **SIMULATION_KWARGS,
+    )
+
+    return results["noise_times"], results["C_values"], results
+
+
+# ============================================================
+# PLOTTING / SUMMARY
+# ============================================================
 
 def summarize_curve(name, t_values, C_values):
     C_values = np.asarray(C_values, dtype=float)
-
     valid = np.isfinite(C_values)
 
     if not np.any(valid):
@@ -212,11 +414,107 @@ def summarize_curve(name, t_values, C_values):
 
     return {
         "model": name,
-        "max_C": C_values[max_idx],
-        "t_max_C": t_values[max_idx],
-        "mean_C": np.nanmean(C_values),
-        "valid_fraction": np.mean(valid),
+        "max_C": float(C_values[max_idx]),
+        "t_max_C": float(t_values[max_idx]),
+        "mean_C": float(np.nanmean(C_values)),
+        "valid_fraction": float(np.mean(valid)),
     }
+
+
+def plot_capacity_comparison(predictions):
+    fig, ax = plt.subplots(figsize=(9, 5))
+
+    for name, payload in predictions.items():
+        t_values = payload["t"]
+        C_values = payload["C"]
+
+        style = payload.get("style", "-")
+        linewidth = payload.get("linewidth", 1.8)
+
+        ax.plot(
+            t_values,
+            C_values,
+            style,
+            linewidth=linewidth,
+            label=name,
+        )
+
+    ax.axvline(
+        D,
+        linestyle="--",
+        color="gray",
+        alpha=0.6,
+        label=r"$t=d$",
+    )
+
+    ax.set_xlabel(r"$t$")
+    ax.set_ylabel(r"$C_E(t)$")
+    ax.grid(True)
+    ax.legend()
+
+    st.pyplot(fig)
+
+
+def plot_error_against_numerical(predictions):
+    if "Numerical simulation" not in predictions:
+        return
+
+    t_num = predictions["Numerical simulation"]["t"]
+    C_num = predictions["Numerical simulation"]["C"]
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+
+    for name, payload in predictions.items():
+        if name == "Numerical simulation":
+            continue
+
+        t_values = payload["t"]
+        C_values = payload["C"]
+
+        if len(t_values) != len(t_num) or not np.allclose(t_values, t_num):
+            C_interp = np.interp(t_num, t_values, C_values)
+        else:
+            C_interp = C_values
+
+        ax.plot(
+            t_num,
+            C_interp - C_num,
+            label=f"{name} - numerical",
+        )
+
+    ax.axhline(0.0, linestyle="--", color="gray")
+    ax.axvline(D, linestyle="--", color="gray", alpha=0.6)
+
+    ax.set_xlabel(r"$t$")
+    ax.set_ylabel(r"$\Delta C_E(t)$")
+    ax.grid(True)
+    ax.legend()
+
+    st.pyplot(fig)
+
+
+def validate_domain(gamma_A, gamma_B, omega_A, omega_B):
+    messages = []
+
+    if not (0.001 <= gamma_A <= 0.035):
+        messages.append(r"$\gamma_A$ is outside the training range $[0.001,0.035]$.")
+
+    if not (0.001 <= gamma_B <= 0.035):
+        messages.append(r"$\gamma_B$ is outside the training range $[0.001,0.035]$.")
+
+    if not (0.1 <= omega_A <= 1.5):
+        messages.append(r"$\omega_A$ is outside the training range $[0.1,1.5]$.")
+
+    if not (0.1 <= omega_B <= 1.5):
+        messages.append(r"$\omega_B$ is outside the training range $[0.1,1.5]$.")
+
+    if abs(gamma_A - gamma_B) > 0.005:
+        messages.append(r"$|\gamma_A-\gamma_B|>0.005$, outside the constrained training domain.")
+
+    if abs(omega_A - omega_B) > 0.3:
+        messages.append(r"$|\omega_A-\omega_B|>0.3$, outside the constrained training domain.")
+
+    return messages
 
 
 # ============================================================
@@ -224,84 +522,95 @@ def summarize_curve(name, t_values, C_values):
 # ============================================================
 
 if run_button:
-    params = ChannelParams(
+    predictions = {}
+    numerical_results = None
+
+    domain_messages = validate_domain(
         gamma_A=gamma_A,
         gamma_B=gamma_B,
         omega_A=omega_A,
         omega_B=omega_B,
-        sigma=sigma,
-        d=d,
-        m_A=m_A,
-        m_B=m_B,
-        E=E,
+    )
+
+    if domain_messages:
+        st.warning(
+            "Some inputs are outside the training domain. Surrogate predictions may be unreliable."
+        )
+        for message in domain_messages:
+            st.markdown(f"- {message}")
+
+    X_features, derived = build_physical_features_from_inputs(
+        gamma_A=gamma_A,
+        gamma_B=gamma_B,
+        omega_A=omega_A,
+        omega_B=omega_B,
     )
 
     st.header("Input parameters")
 
     col1, col2, col3, col4 = st.columns(4)
 
-    col1.metric("gamma_A", f"{gamma_A:.6g}")
-    col2.metric("gamma_B", f"{gamma_B:.6g}")
-    col3.metric("omega_A", f"{omega_A:.6g}")
-    col4.metric("omega_B", f"{omega_B:.6g}")
+    col1.metric(r"$\gamma_A$", f"{gamma_A:.6g}")
+    col2.metric(r"$\gamma_B$", f"{gamma_B:.6g}")
+    col3.metric(r"$\omega_A$", f"{omega_A:.6g}")
+    col4.metric(r"$\omega_B$", f"{omega_B:.6g}")
 
-    col1, col2, col3 = st.columns(3)
+    st.subheader("Derived physical features")
 
-    col1.metric(r"Sigma_A^2", f"{params.Sigma2_A:.6g}")
-    col2.metric(r"Sigma_B^2", f"{params.Sigma2_B:.6g}")
-    col3.metric("t_max", f"{t_max:.6g}")
+    col1, col2, col3, col4 = st.columns(4)
 
-    numerical_C = None
-    ml_C = None
-    torch_C = None
-    numerical_results = None
+    col1.metric(r"$\Sigma_A^2$", f"{derived['Sigma2_A']:.6g}")
+    col2.metric(r"$\Sigma_B^2$", f"{derived['Sigma2_B']:.6g}")
+    col3.metric(r"$\Delta\gamma=\gamma_B-\gamma_A$", f"{derived['gamma_delta']:.6g}")
+    col4.metric(r"$\Delta\omega=\omega_B-\omega_A$", f"{derived['omega_delta']:.6g}")
 
     # ------------------------------------------------------------
-    # ML surrogate
+    # PyTorch curve surrogate
     # ------------------------------------------------------------
 
-    if show_ml:
+    if run_torch_curve:
         try:
-            with st.spinner("Loading and running scikit-learn surrogate..."):
-                ml_model, ml_scaler = cached_load_ml_surrogate()
-
-                ml_C = predict_ml_capacity(
+            with st.spinner("Running PyTorch curve surrogate..."):
+                t_torch, C_torch = predict_torch_curve(
                     gamma_A=gamma_A,
                     gamma_B=gamma_B,
                     omega_A=omega_A,
                     omega_B=omega_B,
-                    t_values=t_values,
-                    model=ml_model,
-                    scaler=ml_scaler,
-                    use_log_target=False,
                 )
 
+            predictions["PyTorch curve surrogate"] = {
+                "t": t_torch,
+                "C": C_torch,
+                "style": ":",
+                "linewidth": 2.2,
+            }
+
         except Exception as exc:
-            st.error(f"Could not run scikit-learn surrogate: {exc}")
+            st.error(f"Could not run PyTorch curve surrogate: {exc}")
 
     # ------------------------------------------------------------
-    # PyTorch surrogate
+    # PCA-ML surrogate
     # ------------------------------------------------------------
 
-    if show_torch:
+    if run_pca_ml:
         try:
-            with st.spinner("Loading and running PyTorch surrogate..."):
-                torch_model, torch_scaler, torch_use_log_target, device = cached_load_torch_surrogate()
-
-                torch_C = predict_torch_capacity(
+            with st.spinner("Running PCA-ML surrogate..."):
+                t_ml, C_ml = predict_pca_ml_curve(
                     gamma_A=gamma_A,
                     gamma_B=gamma_B,
                     omega_A=omega_A,
                     omega_B=omega_B,
-                    t_values=t_values,
-                    model=torch_model,
-                    scaler=torch_scaler,
-                    device=device,
-                    use_log_target=torch_use_log_target,
                 )
 
+            predictions["PCA-ML surrogate"] = {
+                "t": t_ml,
+                "C": C_ml,
+                "style": "--",
+                "linewidth": 2.0,
+            }
+
         except Exception as exc:
-            st.error(f"Could not run PyTorch surrogate: {exc}")
+            st.warning(f"Could not run PCA-ML surrogate: {exc}")
 
     # ------------------------------------------------------------
     # Numerical simulation
@@ -310,115 +619,93 @@ if run_button:
     if run_numerical:
         try:
             with st.spinner("Running full numerical simulation..."):
-                numerical_results = run_simulation(
-                    params=params,
-                    t_max=t_max,
-                    dt=dt,
-                    n_noise_times=int(n_time_points),
-                    n_integral_points=int(n_integral_points),
-                    rtol=rtol,
-                    atol=atol,
-                    determinant_quality_scale=1e-14,
-                    tau_jump_local_factor=100.0,
+                t_num, C_num, numerical_results = run_numerical_simulation(
+                    gamma_A=gamma_A,
+                    gamma_B=gamma_B,
+                    omega_A=omega_A,
+                    omega_B=omega_B,
                 )
 
-                numerical_C = numerical_results["C_values"]
+            predictions["Numerical simulation"] = {
+                "t": t_num,
+                "C": C_num,
+                "style": "-",
+                "linewidth": 2.4,
+            }
 
         except Exception as exc:
             st.error(f"Could not run numerical simulation: {exc}")
 
-    st.header("Capacity comparison")
+    # ------------------------------------------------------------
+    # Output
+    # ------------------------------------------------------------
 
-    plot_capacity_comparison(
-        t_values=t_values,
-        numerical_C=numerical_C,
-        ml_C=ml_C,
-        torch_C=torch_C,
-    )
+    if predictions:
+        st.header("Capacity comparison")
 
-    summaries = []
+        plot_capacity_comparison(predictions)
 
-    if numerical_C is not None:
-        summaries.append(
+        summaries = [
             summarize_curve(
-                "Numerical simulation",
-                t_values,
-                numerical_C,
+                name=name,
+                t_values=payload["t"],
+                C_values=payload["C"],
             )
-        )
+            for name, payload in predictions.items()
+        ]
 
-    if ml_C is not None:
-        summaries.append(
-            summarize_curve(
-                "scikit-learn surrogate",
-                t_values,
-                ml_C,
-            )
-        )
-
-    if torch_C is not None:
-        summaries.append(
-            summarize_curve(
-                "PyTorch NN surrogate",
-                t_values,
-                torch_C,
-            )
-        )
-
-    if summaries:
         st.subheader("Curve summaries")
-        st.dataframe(summaries)
+        st.dataframe(pd.DataFrame(summaries), use_container_width=True)
 
-    if (
-        show_error_plots
-        and numerical_C is not None
-        and (ml_C is not None or torch_C is not None)
-    ):
-        st.header("Prediction error against numerical simulation")
+        if show_error_plots and "Numerical simulation" in predictions and len(predictions) > 1:
+            st.header("Prediction error against numerical simulation")
+            plot_error_against_numerical(predictions)
 
-        plot_error_against_numerical(
-            t_values=t_values,
-            numerical_C=numerical_C,
-            ml_C=ml_C,
-            torch_C=torch_C,
-        )
+        if numerical_results is not None:
+            st.header("Numerical reliability")
 
-    if numerical_results is not None:
-        st.header("Numerical reliability")
+            col1, col2, col3 = st.columns(3)
 
-        col1, col2, col3 = st.columns(3)
-
-        col1.metric("Valid C_E fraction", f"{numerical_results['valid_fraction']:.2%}")
-        col2.metric("Mean reliability", f"{numerical_results['mean_reliability']:.3f}")
-        col3.metric(
-            "Tau jump detected",
-            str(numerical_results["tau_jump_detected"]),
-        )
-
-        if numerical_results["tau_jump_detected"]:
-            st.warning(
-                f"Numerical tau discontinuity detected at "
-                f"t={numerical_results['tau_jump_time']:.6g}. "
-                "Later numerical C_E points are marked invalid."
+            col1.metric(
+                "Valid capacity fraction",
+                f"{numerical_results['valid_fraction']:.2%}",
+            )
+            col2.metric(
+                "Mean reliability",
+                f"{numerical_results['mean_reliability']:.3f}",
+            )
+            col3.metric(
+                r"$\tau$ discontinuity detected",
+                str(numerical_results["tau_jump_detected"]),
             )
 
-    if show_table:
-        st.header("Prediction table")
+            if numerical_results["tau_jump_detected"]:
+                st.warning(
+                    f"Numerical tau discontinuity detected at "
+                    f"t = {numerical_results['tau_jump_time']:.6g}. "
+                    "Later numerical capacity points are marked invalid."
+                )
 
-        table = {
-            "t": t_values,
-        }
+        if show_prediction_table:
+            st.header("Prediction table")
 
-        if numerical_C is not None:
-            table["C_numerical"] = numerical_C
+            table = {"t": next(iter(predictions.values()))["t"]}
 
-        if ml_C is not None:
-            table["C_ML"] = ml_C
+            base_t = table["t"]
 
-        if torch_C is not None:
-            table["C_NN"] = torch_C
+            for name, payload in predictions.items():
+                t_values = payload["t"]
+                C_values = payload["C"]
 
-        st.dataframe(table)
+                if len(t_values) != len(base_t) or not np.allclose(t_values, base_t):
+                    table[name] = np.interp(base_t, t_values, C_values)
+                else:
+                    table[name] = C_values
+
+            st.dataframe(pd.DataFrame(table), use_container_width=True)
+
+    else:
+        st.warning("No model or numerical simulation was selected.")
 
 else:
-    st.info("Insert parameters and press **Run comparison**.")
+    st.info("Select what to compute, choose the input parameters, and press **Run comparison**.")
