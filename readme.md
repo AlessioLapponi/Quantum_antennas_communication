@@ -1,6 +1,6 @@
 # Quantum Antennas Communication — Gaussian Channel Surrogate Model
 
-This project simulates the long-time interaction channel between two non-identical harmonic oscillator detectors and builds surrogate models for the energy-constrained classical capacity \(C_E(t)\).
+This project simulates the long-time interaction channel between two non-identical harmonic oscillator detectors and builds surrogate models for the energy-constrained classical capacity $C_E(t)$.
 
 The workflow combines:
 
@@ -11,9 +11,9 @@ The workflow combines:
 
 The main trainable input parameters are:
 
-\[
+$$
 \gamma_A,\quad \gamma_B,\quad \omega_A,\quad \omega_B.
-\]
+$$
 
 The remaining physical and numerical parameters are fixed to the values used during training.
 
@@ -23,17 +23,17 @@ The remaining physical and numerical parameters are fixed to the values used dur
 
 The numerical simulation computes:
 
-- the transmissivity \(\tau(t)\);
-- the noise determinant \(W(t)\);
-- the energy-constrained classical capacity \(C_E(t)\).
+- the transmissivity $\tau(t)$;
+- the noise determinant $W(t)$;
+- the energy-constrained classical capacity $C_E(t)$.
 
 The final surrogate model aims to approximate the full capacity curve:
 
-\[
+$$
 (\gamma_A,\gamma_B,\omega_A,\omega_B)
 \longrightarrow
 C_E(t_1),\ldots,C_E(t_{200}).
-\]
+$$
 
 This is useful because the full numerical simulation can be slow and may become unstable for some parameter configurations.
 
@@ -43,16 +43,16 @@ This is useful because the full numerical simulation can be slow and may become 
 
 Earlier pointwise surrogates were tested:
 
-\[
-(\gamma_A,\gamma_B,\omega_A,\omega_B,t)\rightarrow C_E(t).
-\]
+$$
+(\gamma_A,\gamma_B,\omega_A,\omega_B,t)\longrightarrow C_E(t).
+$$
 
 They captured the broad trend but produced noisy, time-incoherent curves. The current approach therefore uses **curve-level surrogates**.
 
 The current main surrogate is:
 
 - **PyTorch curve-output neural network**  
-  Predicts the full \(C_E(t)\) curve directly.
+  Predicts the full $C_E(t)$ curve directly.
 
 A PCA-based scikit-learn model is also supported architecturally, but the trained PCA-ML binary is not tracked if it exceeds GitHub’s standard file-size limit.
 
