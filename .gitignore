@@ -31,6 +31,7 @@ models/*
 !models/pca_ml_explained_variance.png
 !models/pca_ml_per_curve_rmse_hist.png
 !models/pca_ml_worst_curves.png
+!models/pca_ml_curve_model.joblib
 
 !models/torch_curve_capacity_mlp.pt
 !models/torch_curve_feature_scaler.joblib
@@ -40,8 +41,6 @@ models/*
 !models/torch_curve_per_curve_rmse_hist.png
 !models/torch_curve_worst_curves.png
 
-# Oversized PCA-ML binary is intentionally not tracked
-models/pca_ml_curve_model.joblib
 
 # Legacy pointwise models are not part of the main runnable app
 models/legacy_pointwise/
